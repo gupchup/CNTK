@@ -1792,10 +1792,12 @@ public:
     }
 
     // request matrices needed to do node function value evaluation
+    // for memory pool utilization optimizaiton, the requested pointer is not immediately useable until the entire network has gone through all requests 
     virtual void RequestMatricesBeforeForwardProp(MatrixPool& matrixPool) override
     {
+        size_t matrixSize = m_sampleLayout.GetNumElements();
         if (IsValueSharable())
-            RequestMatrixFromPool(m_value, matrixPool);
+            RequestMatrixFromPool(m_value, matrixPool, matrixSize, HasMBLayout());
         else
             CreateMatrixIfNull(m_value);
     }
@@ -1804,7 +1806,8 @@ public:
     // don't release matrices that need to be used in the gradient computation
     virtual void ReleaseMatricesAfterForwardProp(MatrixPool& matrixPool) override
     {
-        if (!IsOutputNeededDuringBackprop() && (m_value->GetMatrixType() != SPARSE) && IsValueSharable())
+//        if (!IsOutputNeededDuringBackprop() && (m_value != nullptr && m_value->GetMatrixType() != SPARSE) && IsValueSharable())
+        if (!IsOutputNeededDuringBackprop() && IsValueSharable())
             ReleaseMatrixToPool(m_value, matrixPool);
     }
 
@@ -1820,7 +1823,8 @@ public:
     // request matrices that are needed for gradient computation
     virtual void RequestMatricesBeforeBackprop(MatrixPool& matrixPool) override
     {
-        RequestMatrixFromPool(m_gradient, matrixPool);
+        size_t matrixSize = m_sampleLayout.GetNumElements();
+        RequestMatrixFromPool(m_gradient, matrixPool, matrixSize, HasMBLayout());
     }
 
     // release gradient and temp matrices that no longer needed after all the children's gradients are computed.
@@ -1828,12 +1832,13 @@ public:
     {
         if (!IsLeaf() && !RequiresPreCompute())
         {
-            if (m_gradient != nullptr && m_gradient->GetMatrixType() != SPARSE) // since we don't have a sparse pool yet
-                ReleaseMatrixToPool(m_gradient, matrixPool);
+//            if (m_gradient != nullptr && m_gradient->GetMatrixType() != SPARSE) // since we don't have a sparse pool yet
+            ReleaseMatrixToPool(m_gradient, matrixPool);
 
             // Release the Value matrix only if the output value is needed during backprop
             // since in the case it isn't used, we release it during forward prop itself
-            if (IsOutputNeededDuringBackprop() && m_value->GetMatrixType() != SPARSE && IsValueSharable())
+//            if (IsOutputNeededDuringBackprop() && m_value->GetMatrixType() != SPARSE && IsValueSharable())
+            if (IsOutputNeededDuringBackprop() && IsValueSharable())
                 ReleaseMatrixToPool(m_value, matrixPool);
         }
     }
@@ -1865,18 +1870,16 @@ protected:
             matrixPtr = make_shared<Matrix<ElemType>>(m_deviceId);
     }
 
-    void RequestMatrixFromPool(shared_ptr<Matrix<ElemType>>& matrixPtr, MatrixPool& matrixPool)
+    // matrixSize is per sample size, if unknown or hard to estimate, set matrixSize = 0
+    // if the matrix's size will scale with minibatch size, set mbScale = true 
+    void RequestMatrixFromPool(shared_ptr<Matrix<ElemType>>& matrixPtr, MatrixPool& matrixPool, size_t matrixSize=0, bool mbScale=false)
     {
-        if (matrixPtr == nullptr)
-        {
-            matrixPtr = matrixPool.Request<ElemType>(m_deviceId);
-        }
+        matrixPool.RequestAllocate<ElemType>(m_deviceId, &matrixPtr, matrixSize, mbScale);
     }
 
     void ReleaseMatrixToPool(shared_ptr<Matrix<ElemType>>& matrixPtr, MatrixPool& matrixPool)
     {
-        assert(matrixPtr != nullptr);
-        matrixPool.Release<ElemType>(matrixPtr);
+        matrixPool.RequestRelease<ElemType>(&matrixPtr);
     }
 
 public:
